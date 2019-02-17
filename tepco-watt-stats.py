@@ -2,103 +2,151 @@
 
 import os
 import requests
-import argparse
-import re
 import csv
 import io
 import json
-from datetime import date
-from pprint import pprint
-from urllib.parse import quote
+import schedule
+import time
+import click
+from datetime import datetime
 
-# 引数処理
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    'date', help="使用量を取得したい日付(YYYY-MM-DD もしくは YYYY-MM もしくは YYYY)")
-parser.add_argument('-j', '--json', help="JSON 形式で出力", action="store_true")
-args = parser.parse_args()
+class TepcoWattStats ():
 
-# 引数で渡された日付を処理
-ymd = args.date.split('-')
-year = date.today().timetuple()[0]
-month = None
-day = None
-if(re.match('^[0-9]{4}$', ymd[0])):
-    year = int(ymd[0])
-if(len(ymd) >= 2 and re.match('^[0-9]{2}$', ymd[1]) and int(ymd[1]) <= 12):
-    month = int(ymd[1])
-if(len(ymd) >= 3 and re.match('^[0-9]{2}$', ymd[2]) and int(ymd[2]) <= 31):
-    day = int(ymd[2])
+    def __init__(self, recent_alert_file):
 
-# ログイン情報設定
-username = os.environ['TEPCO_WATT_USERNAME']
-password = os.environ['TEPCO_WATT_PASSWORD']
+        # ログイン情報設定.
+        self.username = os.environ['TEPCO_WATT_USERNAME']
+        self.password = os.environ['TEPCO_WATT_PASSWORD']
+        self.webhook_url = os.environ['SLACK_WEBHOOK_URL']
 
-session = requests.Session()
+        # 前回実行した時の情報を記載したファイル.
+        self.recent_alert_file = recent_alert_file
 
-# ログイン 念のため一度トップページへアクセスして cookie を食べる
-loginparam = {
-    'ACCOUNTUID': username,
-    'PASSWORD': password,
-    'HIDEURL': '/pf/ja/pc/mypage/home/index.page?',
-    'LOGIN': 'EUAS_LOGIN',
-}
-loginheader = {
-    'Referer': 'https://www.kurashi.tepco.co.jp/kpf-login',
-    'Content-Type': 'application/x-www-form-urlencoded',
-}
-session.get('https://www.kurashi.tepco.co.jp/kpf-login')
-login = session.post(
-    'https://www.kurashi.tepco.co.jp/kpf-login', data=loginparam, headers=loginheader,)
+        # スクリプトを実行した年月を取得.
+        today = datetime.today()
+        self.year = today.year
+        self.month = today.month
 
-# CSV 取得前に使用量ページの cookie を食べておく必要があるようなのでリクエストを投げる
-session.get(
-    'https://www.kurashi.tepco.co.jp/pf/ja/pc/mypage/learn/comparison.page')
+    def run(self):
 
-# URL を組み立てて CSV データを取ってくる
-csv_url = 'https://www.kurashi.tepco.co.jp/pf/ja/pc/mypage/learn/comparison.page?ReqID=CsvDL&year=' + \
-    str(year)
-if(month != None and day != None):
-    csv_url = '%s&month=%00d&day=%00d' % (csv_url, month, day)
-elif(month != None):
-    csv_url = '%s&month=%00d' % (csv_url, month)
+        session = requests.Session()
 
-csvgetheader = {
-    'Referer': 'https://www.kurashi.tepco.co.jp/pf/ja/pc/mypage/learn/comparison.page',
-}
-csvdata = session.get(csv_url, headers=csvgetheader)
-csvdata.encoding = csvdata.apparent_encoding
+        # ログイン 念のため一度トップページへアクセスして cookie を食べる.
+        loginparam = {
+            'ACCOUNTUID': self.username,
+            'PASSWORD': self.password,
+            'HIDEURL': '/pf/ja/pc/mypage/home/index.page?',
+            'LOGIN': 'EUAS_LOGIN',
+        }
+        loginheader = {
+            'Referer': 'https://www.kurashi.tepco.co.jp/kpf-login',
+            'Content-Type': 'application/x-www-form-urlencoded',
+        }
+        session.get('https://www.kurashi.tepco.co.jp/kpf-login')
+        login = session.post(
+            'https://www.kurashi.tepco.co.jp/kpf-login', data=loginparam, headers=loginheader,)
 
-# -j/--json オプションがあれば JSON に仕立てて表示、無ければ生データを表示
-if(args.json == True):
-    lines = csv.reader(io.StringIO(initial_value=csvdata.text))
+        # CSV 取得前に使用量ページの cookie を食べておく必要があるようなのでリクエストを投げる.
+        session.get(
+            'https://www.kurashi.tepco.co.jp/pf/ja/pc/mypage/learn/comparison.page')
 
-    stats = {
-        'お客さま番号': "",
-        '事業所コード': "",
-        'ご請求番号': "",
-        '供給地点特定番号': "",
-        '使用量': []
-    }
+        # URL を組み立てて CSV データを取ってくる.
+        csv_url = 'https://www.kurashi.tepco.co.jp/pf/ja/pc/mypage/learn/comparison.page?ReqID=CsvDL&year=' + \
+                str(self.year) + '&month=%00d' % (self.month)
 
-    for line in lines:
+        csvgetheader = {
+            'Referer': 'https://www.kurashi.tepco.co.jp/pf/ja/pc/mypage/learn/comparison.page',
+        }
+        csvdata = session.get(csv_url, headers=csvgetheader)
+        csvdata.encoding = csvdata.apparent_encoding
 
-        if(line[7] == '契約メニュー'):
-            continue
+        # スクリプトを実行した日の電力使用総量を取得.
+        data = csv.reader(io.StringIO(initial_value=csvdata.text))
+        data = [data_of_each_day for data_of_each_day in data]
+        
+        # 現在までの電力使用量を取得 (kWh).
+        watt_sum = float(data[-1][8])
 
-        stats['お客さま番号'] = line[0]
-        stats['事業所コード'] = line[1]
-        stats['ご請求番号'] = line[2]
-        stats['供給地点特定番号'] = line[3]
-        stats['使用量'].append({
-            '年月日': line[4],
-            '曜日': line[5],
-            '休祝日': True if line[6] == "○" else False,
-            '契約メニュー': line[7],
-            'ご使用量': 0.0 if line[8] == "" else float(line[8]),
-            '売電量': 0.0 if line[9] == "" else float(line[9]),
-        })
+        # 取得した電力使用量データの対象日を取得 (YYYY/MM/DD).
+        date_of_data = data[-1][4]
 
-    print(json.dumps(stats, ensure_ascii=False))
-else:
-    print(csvdata.text)
+        # アラートをSlackに通知
+        if watt_sum > 40:
+            self.watt_alert(watt_sum, 40, date_of_data)
+        elif watt_sum > 35:
+            self.watt_alert(watt_sum, 35, date_of_data)
+        elif watt_sum > 30:
+            self.watt_alert(watt_sum, 30, date_of_data)
+        elif watt_sum > 25:
+            self.watt_alert(watt_sum, 25, date_of_data)
+        elif watt_sum > 20:
+            self.watt_alert(watt_sum, 20, date_of_data)
+        elif watt_sum > 15:
+            self.watt_alert(watt_sum, 15, date_of_data)
+        elif watt_sum > 10:
+            self.watt_alert(watt_sum, 10, date_of_data)
+
+    # 実行日の電力使用総量が閾値を超えていたらSlackに通知.
+    def watt_alert (self, current_watt_sum, threthold, date_of_data):
+
+        new_alert_info = {
+            'year': date_of_data.split('/')[0],
+            'month': date_of_data.split('/')[1],
+            'day': date_of_data.split('/')[2],
+            'threshold': threthold
+        }
+
+        if os.path.exists(self.recent_alert_file):
+            with open(self.recent_alert_file, 'r') as fp:
+                recent_alert_info = json.load(fp)
+        else:
+            recent_alert_info = {}
+
+        # まだ通知していないアラートの場合にSlackに通知.
+        if recent_alert_info != new_alert_info:
+            alert_text = f'{date_of_data}の電力使用量が{threthold} kWhを超えました. 現在の電力使用量は{current_watt_sum:.1f} kWhです.'
+            
+            # Slackへのwebhook.
+            requests.post(self.webhook_url, data = json.dumps({
+                'text': alert_text
+            }))
+
+            # コンソールにも出力.
+            print ('[INFO] ' + alert_text)
+            
+            # 最新のアラートの情報を保存.
+            with open(self.recent_alert_file, 'w') as fp:
+                json.dump(new_alert_info, fp, indent=4)
+
+@click.command()
+@click.option('-e', '--end-hour', default='23', help='アラート通知を終了する時刻 (時). デフォルトは23.', type=click.IntRange(16, 24))
+@click.option('-m', '--minutes', default='0', help='アラートを通知する毎時の時刻 (分). デフォルトは00.', multiple=True, type=click.IntRange(0, 59))
+def cmd(end_hour, minutes):
+    # アラートを開始・終了する時間.
+    # 現状15時以降しかデータが更新されない仕様なので開始時刻は15時で固定.
+    # https://support.tepco.co.jp/faq/show/880?site_domain=kurashi
+    alert_start_time = 15  
+    alert_end_time = end_hour
+
+    def job():
+        proc = TepcoWattStats('./recent_alert.txt')
+        proc.run()
+    
+    # うまく動かない.
+    #schedule.every().day.at(":15").do(job)
+    #schedule.every().day.at(":30").do(job)
+
+    # アラートを通知する時刻を指定.
+    for hour in range(alert_start_time, alert_end_time):
+        hour = str(hour).zfill(2)
+        for minute in minutes:
+            minute = str(minute).zfill(2)
+            print ('[INFO] Watt sum will be checked at ' + f'{hour}:{minute}')
+            schedule.every().day.at(f'{hour}:{minute}').do(job)
+
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+    
+if __name__ == '__main__':
+    cmd()

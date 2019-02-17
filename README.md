@@ -1,22 +1,24 @@
 # tepco-watt-stats
 
-くらしTEPCO(https://www.kurashi.tepco.co.jp/pf/ja/pc/mypage/home/index.page )のページから、電力使用量のデータを取得するスクリプトです。
+くらしTEPCO(https://www.kurashi.tepco.co.jp/pf/ja/pc/mypage/home/index.page )のページから、電力使用量のデータを取得して、閾値を超えていた場合にSlackに使用量アラートを投げるスクリプトです.
 
-# Usage
+## Usage
 
-あらかじめ、ログイン用ユーザIDとパスワードの値を、それぞれ環境変数 TEPCO_WATT_USERNAME と TEPCO_WATT_PASSWORD にセットしておいてください。
+### 環境変数の設定
+
+あらかじめ、ログイン用ユーザID、パスワード、Slack Web hookの値を、それぞれ環境変数 TEPCO_WATT_USERNAME と TEPCO_WATT_PASSWORD と SLACK_WEBHOOK_URL にセットしておいてください.
 
 ```
-python3 tepco-watt-stats.py YYYY-MM-DD [-j/--json]
-python3 tepco-watt-stats.py YYYY-MM [-j/--json]
-python3 tepco-watt-stats.py YYYY [-j/--json]
+export TEPCO_WATT_USERNAME=YOUER_ID
+export TEPCO_WATT_PASSWORD=YOUR_PASSWORD
+export SLACK_WEBHOOK_URL=YOUR_SLACK_WEBHOOK
 ```
 
-引数に渡す日付が
-+ 年のみの場合は、その年の月単位の使用量データを
-+ 年と月の場合は、その月の日単位の使用量データを
-+ 年と月と日の場合は、その日の時間単位(30分刻み)の使用量データを
+### 実行
+```
+# 15時から23時の毎正時に電力使用量のデータをチェックする.
+python3 tepco-watt-stats.py
 
-それぞれ取得します。
-
-標準では、CSV データをそのまま標準出力に出力しますが、-j/--json オプションを付けると、データを JSON に加工して出力します。
+# 15時から21時の間の **:15 と **:45 に電力使用量のデータをチェックする.
+python3 tepco-watt-stats.py -e 21 -m 15 -m 45
+```
